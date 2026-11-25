@@ -325,14 +325,14 @@ function ingest(res){
   $("#datesel").innerHTML=dates.map(d=>`<option value="${d}">${short(d)}</option>`).join("");
   const st=res&&res.updated;
   $("#fresh").textContent="עודכן "+new Date(st||Date.now()).toLocaleString("he-IL",{dateStyle:"short",timeStyle:"short"})+` · ${items.length} פריטים`;
-  render();
+  if(!window.__noRender)render();
 }
 function ingestInsights(res){
   const vals=findValues(res&&(res.payload!==undefined?res.payload:res));
   insights={};
   if(vals)vals.slice(1).filter(r=>r&&r[0]&&r[2]).forEach(r=>{(insights[String(r[0]).trim()]=insights[String(r[0]).trim()]||[]).push({n:+r[1]||0,head:String(r[2]||"").trim(),text:String(r[3]||"").trim(),link:String(r[4]||"").trim()})});
   Object.values(insights).forEach(a=>a.sort((x,y)=>x.n-y.n));
-  if(loaded)render();
+  if(loaded&&!window.__noRender)render();
 }
 function showStatus(kind,msg,btn){const el=$("#status");if(!kind){el.innerHTML="";return}el.innerHTML=`<div class="banner ${kind==="bad"?"bad":""}"><span>${msg}</span>${btn?`<button id="stb">${btn.label}</button>`:""}</div>`;if(btn)$("#stb").addEventListener("click",btn.fn)}
 /* ---------- routing ---------- */
@@ -452,7 +452,7 @@ function archiveView(){
   const topics=[...new Set(items.map(i=>i.topic).filter(Boolean))].sort();
   const usesAll=[...new Set(items.flatMap(i=>i.use.split(",")).map(s=>s.trim()).filter(Boolean))].sort();
   const f=(k,v,l)=>`<button class="facet" data-k="${k}" data-v="${esc(v)}" aria-pressed="${String(arch[k])===String(v)}">${esc(l)}</button>`;
-  return `<div class="sec-h"><h2>ארכיון וחיפוש</h2><span class="sub">כל הפריטים מכל התקצירים</span></div>
+  return `<div class="sec-h"><h2>ארכיון וחיפוש</h2><span class="sub">החודש האחרון · חיפוש סורק את כל הארכיון</span></div>
   <div class="searchbar">
     <input type="search" id="q" placeholder="חפש: Series A, קרדיטים, תמחור, Nvidia…" value="${esc(arch.q)}" aria-label="חיפוש במאגר">
     <div class="facetrow"><span class="lbl">נושא</span><div class="facets">${f("topic","","הכול")}${topics.map(t=>f("topic",t,t)).join("")}</div></div>
@@ -462,6 +462,7 @@ function archiveView(){
 }
 function bindArchive(){
   const upd=()=>{
+    if(arch.q.trim()&&window.__ensureAll){window.__ensureAll(true).then(x=>{if(x)upd()})}
     const w=arch.q.toLowerCase().split(/\s+/).filter(Boolean);
     const res=items.filter(i=>(!arch.topic||i.topic===arch.topic)&&(!arch.use||i.use.includes(arch.use))&&i.importance>=arch.min&&(!arch.star||starred.has(i.key))&&w.every(x=>(i.title+" "+i.summary+" "+i.expansion+" "+i.tags+" "+i.source+" "+i.relevance).toLowerCase().includes(x)))
       .sort((a,b)=>(b.digestDate||"").localeCompare(a.digestDate||"")||b.importance-a.importance);
@@ -501,19 +502,31 @@ function trendsView(){
 function bindTrends(){document.querySelectorAll("[data-tag]").forEach(a=>a.addEventListener("click",()=>{arch={q:a.dataset.tag,topic:"",use:"",min:1,star:false}}))}
 
 /* ---------- boot ---------- */
-$("#datesel").addEventListener("change",e=>{currentDate=e.target.value;try{history.replaceState(null,"","#d-"+currentDate)}catch(_){}render();window.scrollTo(0,0)});
+let ALLDAYS=[],LOADED={},RAW={},fullLoaded=false,IDX={};
+function loadDays(list){return Promise.all(list.filter(d=>!LOADED[d]).map(d=>fetch("days/"+d+".json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(j=>{LOADED[d]=1;if(j)RAW[d]=j}).catch(()=>{})))}
+function rebuild(noRender){
+  const rows=[COLS],ins=[["d","n","h","t","l"]];
+  Object.keys(RAW).sort().forEach(d=>{const day=RAW[d];
+    (day.items||[]).forEach(r=>rows.push([r[0],day.date,r[1],r[2],r[3],r[4],r[5]||"",r[6],r[7],"","","",r[8],r[9],r[10]||""]));
+    (day.insights||[]).forEach(x=>ins.push([day.date,x[0],x[1],x[2],x[3]]));});
+  window.__noRender=!!noRender; ingestInsights({values:ins}); ingest({values:rows,updated:IDX.updated}); window.__noRender=false;
+  const sel=$("#datesel");sel.innerHTML=ALLDAYS.slice().reverse().map(d=>`<option value="${d}">${short(d)}</option>`).join("");if(currentDate)sel.value=currentDate;
+}
+function ensureAll(noRender){if(fullLoaded)return Promise.resolve(false);fullLoaded=true;return loadDays(ALLDAYS).then(()=>{rebuild(noRender);return true})}
+window.__ensureAll=ensureAll;
+$("#datesel").addEventListener("change",async e=>{const d=e.target.value;currentDate=d;try{history.replaceState(null,"","#d-"+d)}catch(_){}if(!LOADED[d])await ensureAll(true);currentDate=d;render();window.scrollTo(0,0)});
 render();
 (async()=>{
   try{
-    const idx=await (await fetch("index.json",{cache:"no-store"})).json();
-    const days=await Promise.all((idx.days||[]).map(d=>fetch("days/"+d+".json",{cache:"no-store"}).then(r=>r.ok?r.json():null).catch(()=>null)));
-    const rows=[COLS];const ins=[["d","n","h","t","l"]];
-    days.filter(Boolean).forEach(day=>{
-      (day.items||[]).forEach(r=>rows.push([r[0],day.date,r[1],r[2],r[3],r[4],r[5]||"",r[6],r[7],"","","",r[8],r[9],r[10]||""]));
-      (day.insights||[]).forEach(x=>ins.push([day.date,x[0],x[1],x[2],x[3]]));
-    });
-    ingestInsights({values:ins});
-    ingest({values:rows,updated:idx.updated});
+    IDX=await (await fetch("index.json",{cache:"no-cache"})).json();
+    ALLDAYS=(IDX.days||[]).slice().sort();
+    const last=ALLDAYS[ALLDAYS.length-1];
+    const cut=last?new Date(new Date(last+"T00:00:00Z").getTime()-30*864e5).toISOString().slice(0,10):"";
+    const want=ALLDAYS.filter(d=>d>=cut);
+    const m=(location.hash||"").match(/^#d-(\d{4}-\d{2}-\d{2})$/);if(m&&ALLDAYS.includes(m[1])&&!want.includes(m[1]))want.push(m[1]);
+    await loadDays(want);
+    if(want.length===ALLDAYS.length)fullLoaded=true;
+    rebuild(false);
   }catch(e){showStatus("warn","לא הצלחתי לטעון את התקצירים. נסה לרענן את העמוד.")}
 })();
 })();
